@@ -4,13 +4,12 @@
 export const zh = {
   'nav': '归档会话',
   'title': '归档会话',
-  'description': '这里列出所有被归档的会话。点击「恢复」即可把它放回侧边栏原位置。',
+  'description': '按文件夹分组的归档会话，点击「恢复」即可把它放回侧边栏原位置。',
   'empty': '没有归档的会话。',
   'restore': '恢复',
   'restoring': '恢复中…',
-  'restored': '已恢复',
   'restoreError': '恢复失败，请稍后重试。',
-  'sessionId': '会话 ID',
+  'unowned': '未归属的会话',
 } satisfies Record<string, string>
 
 /** The settings.archive namespace key union. */
@@ -20,11 +19,10 @@ export type ArchiveLocaleKey = keyof typeof zh
 export const en = {
   'nav': 'Archived sessions',
   'title': 'Archived sessions',
-  'description': 'Conversations you have archived. Restore one to put it back in the sidebar.',
+  'description': 'Archived sessions grouped by folder. Restore one to put it back in the sidebar.',
   'empty': 'No archived sessions.',
   'restore': 'Restore',
   'restoring': 'Restoring…',
-  'restored': 'Restored',
   'restoreError': 'Failed to restore; try again later.',
-  'sessionId': 'Session ID',
+  'unowned': 'Unowned sessions',
 } satisfies Record<ArchiveLocaleKey, string>
