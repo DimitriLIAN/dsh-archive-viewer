@@ -1,23 +1,24 @@
 /**
- * dsh-archive-viewer host service: one REST op on `ctx.webServer` that clears
- * a session id from the durable workspace registry's `archivedSessionIds` set.
+ * dsh-archive-viewer host service: two REST ops on `ctx.webServer`.
  *
- * The official workspace RPC surface only exposes `archiveSession` (no
- * unarchive), so this plugin performs the symmetric write through the live
- * `workspaceRegistry` service — the same `setState` path `archiveSession`
- * uses internally. The write lands through `domain.global.set`, which is the
- * exact mutation the host gateway watches to broadcast
- * `host/archived-sessions-changed`; the sidebar therefore re-projects the
- * restored session without a reload. No DSH core code is modified.
+ * - `unarchive`: clears a session id from the durable workspace registry's
+ *   `archivedSessionIds` set — the symmetric write to `archiveSession` through
+ *   the live `workspaceRegistry` (same `setState` path, so the gateway still
+ *   broadcasts `host/archived-sessions-changed` and the sidebar re-projects).
+ * - `delete`: permanently removes an archived session's stored log via the
+ *   `sessionPersistence.locate()` location hint, then clears the id from the
+ *   archive set. On the next DSH restart the workspace bootstrap drops the
+ *   dangling `sessionIds` slot (its header is gone), so the deletion settles.
  *
- * The browser half composes the list itself from the standard `useSessions`
- * + `useWorkspaces` seats (titles come from the session list), so this host
- * surface only needs the write op.
+ * Both ops go through host services and the filesystem only — no DSH core
+ * source is modified.
  */
 
+import { existsSync, rmSync } from 'node:fs'
+import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import type { ArchiveResult, UnarchiveRequest, UnarchiveResult } from './types.ts'
+import type { ArchiveResult, DeleteResult, UnarchiveResult } from './types.ts'
 
 export type * from './types.ts'
 
@@ -38,6 +39,12 @@ interface ArchiveRegistryFace {
     readonly pendingMutation?: unknown
   }
   setState(state: unknown): Promise<void>
+}
+
+/** Runtime face of the session-persistence service: locate one session's log. */
+interface SessionPersistenceFace {
+  list(): Promise<{ id: string; cwd?: string }[]>
+  locate(meta: { id: string; cwd?: string }): { kind: string; path: string } | undefined
 }
 
 /** Read a JSON request body (bounded). */
@@ -85,26 +92,70 @@ async function unarchive(registry: ArchiveRegistryFace, sessionId: string): Prom
   return [...archivedSessionIds]
 }
 
+/**
+ * Permanently delete an archived session's stored log, then clear it from the
+ * archive set. The log removal is best-effort (a missing/foreign backend logs
+ * nothing); the archive-set clear always runs so the UI never keeps a ghost row.
+ */
+async function deleteArchived(ctx: Context, sessionId: string): Promise<DeleteResult> {
+  let removed = false
+  let path: string | null = null
+  try {
+    const persistence = ctx.get('sessionPersistence') as unknown as SessionPersistenceFace | undefined
+    if (persistence !== undefined) {
+      const headers = await persistence.list()
+      const header = headers.find((h) => String(h.id) === sessionId)
+      if (header !== undefined) {
+        const location = persistence.locate({ id: header.id, cwd: header.cwd })
+        if (location !== undefined && location.path !== '') {
+          const dir = dirname(location.path)
+          if (existsSync(dir)) {
+            rmSync(dir, { recursive: true, force: true })
+            removed = true
+            path = dir
+          }
+        }
+      }
+    }
+  } catch (error: unknown) {
+    console.warn('dsh-archive-viewer: session log removal failed:', error)
+  }
+
+  const registry = ctx.get('workspaceRegistry') as unknown as ArchiveRegistryFace
+  const state = registry.state
+  const archivedSessionIds = state.archivedSessionIds.filter((id) => id !== sessionId)
+  if (archivedSessionIds.length !== state.archivedSessionIds.length) {
+    await registry.setState({ ...state, archivedSessionIds })
+  }
+
+  return { removed, path, archivedSessionIds: [...archivedSessionIds] }
+}
+
 /** Mount the REST surface. Returns the route disposer. */
 export function registerRoutes(ctx: Context): () => void {
   const webServer = ctx.get('webServer') as { register(route: WebRoute): () => void } | undefined
   if (webServer === undefined) return () => {}
 
-  const handler: WebRoute['handler'] = (async (
+  const makeHandler = (op: 'unarchive' | 'delete'): WebRoute['handler'] => (async (
     req: NodeJS.ReadableStream & { url?: string },
     res: { writeHead(status: number, headers: Record<string, string>): void; end(body?: string): void },
   ): Promise<void> => {
     try {
-      const body = (await readJsonBody(req)) as Partial<UnarchiveRequest>
+      const body = (await readJsonBody(req)) as Record<string, unknown>
       const sessionId = typeof body['sessionId'] === 'string' ? body['sessionId'].trim() : ''
       if (sessionId === '') {
         sendJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'missing sessionId' } })
         return
       }
-      const registry = ctx.get('workspaceRegistry') as unknown as ArchiveRegistryFace
-      const archivedSessionIds = await unarchive(registry, sessionId)
-      const result: ArchiveResult<UnarchiveResult> = { ok: true, value: { archivedSessionIds } }
-      sendJson(res, 200, result)
+      if (op === 'unarchive') {
+        const registry = ctx.get('workspaceRegistry') as unknown as ArchiveRegistryFace
+        const archivedSessionIds = await unarchive(registry, sessionId)
+        const result: ArchiveResult<UnarchiveResult> = { ok: true, value: { archivedSessionIds } }
+        sendJson(res, 200, result)
+      } else {
+        const result: ArchiveResult<DeleteResult> = { ok: true, value: await deleteArchived(ctx, sessionId) }
+        sendJson(res, 200, result)
+      }
     } catch (error: unknown) {
       sendJson(res, 400, {
         ok: false,
@@ -113,15 +164,19 @@ export function registerRoutes(ctx: Context): () => void {
     }
   }) as unknown as WebRoute['handler']
 
-  return webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/unarchive`, handler })
+  const disposers = [
+    webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/unarchive`, handler: makeHandler('unarchive') }),
+    webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/delete`, handler: makeHandler('delete') }),
+  ]
+  return () => { for (const dispose of disposers) dispose() }
 }
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-archive-viewer'
 
-/** Plugin entry: mount the REST route once the web server and registry are up. */
+/** Plugin entry: mount the REST routes once the web server and registry are up. */
 export function apply(ctx: Context): void {
-  ctx.inject(['webServer', 'workspaceRegistry'], (webCtx: Context) => {
+  ctx.inject(['webServer', 'workspaceRegistry', 'sessionPersistence'], (webCtx: Context) => {
     webCtx.effect(() => registerRoutes(webCtx), 'dsh-archive-viewer: routes')
   })
 }

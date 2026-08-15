@@ -1,22 +1,25 @@
 /**
  * Archived sessions section registered into `settings.section`: lists every
  * archived session grouped by its owning workspace (folder), showing each
- * session's title and last-updated time, with a Restore action that clears the
- * session from the registry-global archive set. The list re-derives from the
- * `useWorkspaces` archive set, so a successful restore (broadcast by the host
- * as `host/archived-sessions-changed`) drops the row automatically.
+ * session's title and last-updated time. Each row offers Restore (clear the
+ * archive flag) and Delete (permanently remove the stored log). The list
+ * re-derives from the `useWorkspaces` archive set, so a successful restore or
+ * delete (broadcast by the host as `host/archived-sessions-changed`) drops the
+ * row automatically.
  */
 
 import React, { useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
-import type { UnarchiveResult } from '../types.ts'
+import type { DeleteResult, UnarchiveResult } from '../types.ts'
 import type { ArchiveLocaleKey } from './locales.ts'
 
 /** Registration-side remote face provided by the section registration. */
 export interface ArchiveSectionInjected {
   /** Clear one session id from the archive set; resolves with the remaining set. */
   readonly unarchive: (sessionId: string) => Promise<UnarchiveResult>
+  /** Permanently delete one archived session's stored log. */
+  readonly remove: (sessionId: string) => Promise<DeleteResult>
 }
 
 /** Full component props assembled by the Settings section renderer. */
@@ -98,8 +101,11 @@ const styles: Record<string, React.CSSProperties> = {
   rowTime: {
     fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)',
   },
+  actions: {
+    display: 'flex', alignItems: 'center', gap: '6px', flex: 'none',
+  },
   restore: {
-    boxSizing: 'border-box', flex: 'none', cursor: 'pointer',
+    boxSizing: 'border-box', cursor: 'pointer',
     border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '16px',
     padding: '5px 14px', font: 'inherit', fontSize: '13px', lineHeight: '20px',
     background: 'var(--dsw-alias-button-primary-fill)',
@@ -109,17 +115,40 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--dsw-alias-interactive-bg-hover)',
     color: 'var(--dsw-alias-label-secondary)', cursor: 'not-allowed',
   },
+  delete: {
+    boxSizing: 'border-box', cursor: 'pointer',
+    border: '1px solid var(--dsw-alias-state-error-primary)', borderRadius: '16px',
+    padding: '5px 14px', font: 'inherit', fontSize: '13px', lineHeight: '20px',
+    background: 'transparent',
+    color: 'var(--dsw-alias-state-error-primary)',
+  },
+  deleteConfirm: {
+    background: 'var(--dsw-alias-state-error-primary)',
+    color: '#ffffff',
+  },
+  deleteDisabled: {
+    opacity: 0.55, cursor: 'not-allowed',
+  },
+  cancel: {
+    boxSizing: 'border-box', cursor: 'pointer',
+    border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '16px',
+    padding: '5px 12px', font: 'inherit', fontSize: '13px', lineHeight: '20px',
+    background: 'transparent',
+    color: 'var(--dsw-alias-label-secondary)',
+  },
   error: {
     fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)',
   },
 }
 
 /** Render the Archived sessions section, grouped by owning folder. */
-export function ArchiveSection({ t, useSessions, useWorkspaces, unarchive }: ArchiveSectionProps) {
+export function ArchiveSection({ t, useSessions, useWorkspaces, unarchive, remove }: ArchiveSectionProps) {
   const archivedIds = useWorkspaces((state) => state.archivedSessionIds)
   const workspaces = useWorkspaces((state) => state.items)
   const byId = useSessions((state) => state.byId)
   const [pendingId, setPendingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmId, setConfirmId] = useState<string | null>(null)
   const [errorId, setErrorId] = useState<string | null>(null)
 
   // session id → owning workspace (archived sessions keep their account slot).
@@ -161,6 +190,19 @@ export function ArchiveSection({ t, useSessions, useWorkspaces, unarchive }: Arc
     })
   }
 
+  const onDelete = (id: string): void => {
+    setDeletingId(id)
+    setErrorId(null)
+    void remove(id).then(() => {
+      setDeletingId(null)
+      setConfirmId(null)
+    }).catch(() => {
+      setDeletingId(null)
+      setConfirmId(null)
+      setErrorId(id)
+    })
+  }
+
   return (
     <div style={styles.section}>
       <h2 style={styles.title}>{t('title')}</h2>
@@ -175,24 +217,51 @@ export function ArchiveSection({ t, useSessions, useWorkspaces, unarchive }: Arc
               <span>{group.folder}</span>
             </div>
             <ul style={styles.list}>
-              {group.items.map((item) => (
-                <li key={item.id} style={styles.row}>
-                  <div style={styles.rowMain}>
-                    <div style={styles.rowTitle}>{item.title}</div>
-                    {item.updatedAt !== undefined && (
-                      <div style={styles.rowTime}>{formatTime(item.updatedAt)}</div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    style={pendingId === item.id ? { ...styles.restore, ...styles.restoreDisabled } : styles.restore}
-                    disabled={pendingId === item.id}
-                    onClick={() => onRestore(item.id)}
-                  >
-                    {pendingId === item.id ? t('restoring') : t('restore')}
-                  </button>
-                </li>
-              ))}
+              {group.items.map((item) => {
+                const confirming = confirmId === item.id
+                const busy = pendingId === item.id || deletingId === item.id
+                return (
+                  <li key={item.id} style={styles.row}>
+                    <div style={styles.rowMain}>
+                      <div style={styles.rowTitle}>{item.title}</div>
+                      {item.updatedAt !== undefined && (
+                        <div style={styles.rowTime}>{formatTime(item.updatedAt)}</div>
+                      )}
+                    </div>
+                    <div style={styles.actions}>
+                      {confirming && (
+                        <button
+                          type="button"
+                          style={styles.cancel}
+                          disabled={busy}
+                          onClick={() => setConfirmId(null)}
+                        >
+                          {t('cancel')}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        style={confirming ? { ...styles.delete, ...styles.deleteConfirm, ...(busy ? styles.deleteDisabled : {}) } : { ...styles.delete, ...(busy ? styles.deleteDisabled : {}) }}
+                        disabled={busy}
+                        onClick={() => {
+                          if (confirming) onDelete(item.id)
+                          else setConfirmId(item.id)
+                        }}
+                      >
+                        {deletingId === item.id ? t('deleting') : confirming ? t('deleteConfirm') : t('delete')}
+                      </button>
+                      <button
+                        type="button"
+                        style={busy ? { ...styles.restore, ...styles.restoreDisabled } : styles.restore}
+                        disabled={busy}
+                        onClick={() => onRestore(item.id)}
+                      >
+                        {pendingId === item.id ? t('restoring') : t('restore')}
+                      </button>
+                    </div>
+                  </li>
+                )
+              })}
             </ul>
           </div>
         ))

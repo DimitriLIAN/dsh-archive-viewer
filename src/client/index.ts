@@ -8,7 +8,7 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import type { ArchiveResult, UnarchiveResult } from '../types.ts'
+import type { ArchiveResult, DeleteResult, UnarchiveResult } from '../types.ts'
 import { ArchiveSection, type ArchiveSectionInjected } from './ArchiveSection.tsx'
 import { en, zh, type ArchiveLocaleKey } from './locales.ts'
 
@@ -55,6 +55,7 @@ export function apply(ctx: ClientContext): void {
 
   const injected = (): ArchiveSectionInjected => ({
     unarchive: (sessionId) => call<UnarchiveResult>('unarchive', { sessionId }),
+    remove: (sessionId) => call<DeleteResult>('delete', { sessionId }),
   })
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
