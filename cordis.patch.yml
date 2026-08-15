@@ -1,0 +1,6 @@
+# dsh-archive-viewer: restore-able archived-sessions list in Web settings.
+# The host service mounts here; the browser half is discovered through the
+# package.json dsh.client declaration (no separate Loader row).
+- insert:
+    - id: archive-viewer
+      name: 'dsh-archive-viewer'
