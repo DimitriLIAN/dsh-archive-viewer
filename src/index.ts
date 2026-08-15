@@ -47,6 +47,11 @@ interface SessionPersistenceFace {
   locate(meta: { id: string; cwd?: string }): { kind: string; path: string } | undefined
 }
 
+/** Runtime face of the storage-domain facility: drop one projcache record. */
+interface StorageDomainFace {
+  get(name: string): { table(name: string): { delete(key: string): Promise<unknown> } } | undefined
+}
+
 /** Read a JSON request body (bounded). */
 function readJsonBody(req: NodeJS.ReadableStream & { destroy?(): void }): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -119,6 +124,18 @@ async function deleteArchived(ctx: Context, sessionId: string): Promise<DeleteRe
     }
   } catch (error: unknown) {
     console.warn('dsh-archive-viewer: session log removal failed:', error)
+  }
+
+  // Drop the orphaned projection-cache record (title/stat rows) so the deleted
+  // session leaves no dangling metadata behind.
+  try {
+    const storageDomain = ctx.get('storageDomain') as unknown as StorageDomainFace | undefined
+    const projcache = storageDomain?.get('session_projcache')
+    if (projcache !== undefined) {
+      await projcache.table('sessions').delete(sessionId)
+    }
+  } catch (error: unknown) {
+    console.warn('dsh-archive-viewer: projcache cleanup failed:', error)
   }
 
   const registry = ctx.get('workspaceRegistry') as unknown as ArchiveRegistryFace

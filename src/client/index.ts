@@ -26,7 +26,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export const NS = 'settings.archive'
 
 /** Services required by the Settings registration. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'sessions']
 
 /** Base URL of the host REST surface. */
 const BASE = '/api2/archive'
@@ -55,7 +55,14 @@ export function apply(ctx: ClientContext): void {
 
   const injected = (): ArchiveSectionInjected => ({
     unarchive: (sessionId) => call<UnarchiveResult>('unarchive', { sessionId }),
-    remove: (sessionId) => call<DeleteResult>('delete', { sessionId }),
+    remove: async (sessionId) => {
+      const result = await call<DeleteResult>('delete', { sessionId })
+      // Re-pull the session list so the deleted session drops from the sidebar
+      // (the host list reads persistence, so the removed log no longer shows).
+      const sessions = ctx.sessions as unknown as { refresh(): Promise<void> }
+      await sessions.refresh()
+      return result
+    },
   })
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
